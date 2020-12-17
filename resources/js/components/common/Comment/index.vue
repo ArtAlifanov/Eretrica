@@ -1,0 +1,864 @@
+<template>
+    <div :class="['comment', {'is-reversed': reversed}, newStyle?'new-style':'old-style']">
+        <el-tooltip :content="data.user.name" :placement="reversed ? 'top-end':'top-start'" effect="dark">
+            <template slot="content">
+                {{data.user.name}}
+                <small style="display: block;">{{ago(data.created_at, $i18n.locale)}}</small>
+            </template>
+            <ui-avatar ref="avatar" :name="data.user.name" :size="newStyle?28:32" :src="data.user.avatar" />
+        </el-tooltip>
+        <div ref="container" class="container" :class="newStyle?'new-style':'old-style'">
+            <el-input ref="content" :class="{'is-focused': idState.focused}" type="textarea" resize="none" v-if="idState.editing" v-model="comment" autosize :disabled="idState.loading._isVue && idState.loading.visible" :validate-event="false" @blur="idState.focused = false" @focus="idState.focused = true" @keydown.native.enter="$emit('size-hanged')" @keydown.native.alt.enter.exact="update" @keydown.native.stop.esc.exact="cancelEdit" />
+            <div class="content" :class="{'empty': !comment, 'disabled': idState.loading._isVue && idState.loading.visible}" v-else-if='comment'>
+                <div class="text" :class="newStyle?'new-style':'old-style'">
+                    <span class="name" v-if="newStyle">{{ data.user.name }}</span>
+                    <span class="time" v-if="newStyle">{{ data.updated_at.slice(11, 16) }}</span>
+                    <div v-html="comment" class="msg">{{comment || $t('general.components.common.comment.deleted_comment_placeholder')}}</div><div class="tag"></div><div class="border"></div>
+                    
+                </div>
+                <div class="actions" v-if="hasActions && !newStyle">                                    
+                    <el-button type="text" @click="enterEdit" v-if="data.comment">
+                        <i class="icon-pencil"></i>
+                    </el-button>
+                    <el-button type="text" @click="remove">
+                        <i class="icon-trash-empty" style="color: red;"></i>
+                    </el-button>
+                </div>
+            </div>        
+            <div v-if="type === 'internalNotices' && attachments.count" class="attachment-images">
+                <div v-if="attachments.preview" class="preview-image">
+                    <ui-image ref="ui-image" :src="attachments.preview.url" :src-list="attachments.srcList" :index="0">
+                        <div slot="placeholder" class="placeholder el-icon-loading"></div>
+                    </ui-image>
+                </div>
+                <div class="images" v-if="attachments.images.length">
+                    <div 
+                        :key="file.name"
+                        class="image"
+                        v-for="(file, index) in attachments.images">
+
+                        <span v-if="index === 2 && attachments.count > 4" class="count"><span>+{{ attachments.count - 4 }}</span></span>
+                        <ui-image ref="ui-image" :src="file.url" :src-list="attachments.srcList" :index="index">
+                            <div slot="placeholder" class="placeholder el-icon-loading"></div>
+                        </ui-image>
+                    </div>
+                </div>
+            </div>    
+            <div class="attachment-files" v-if="type === 'internalNotices' && attachments.files.length">
+                <div
+                    :key="file.name"
+                    class="file"
+                    v-for="file in attachments.files">
+                    <span class="file-image">
+                        <svg-icon icon="folder" />
+                    </span>
+                    <span class="file-info">
+                        <span class='file-name'>
+                            <a v-if="file.isLink" :href="file.url" target="_blank">{{ file.name }}</a>
+                            <span v-else>{{ file.name }}</span>
+                        </span>
+                        <span class='file-size'>{{ file.capacity }}</span>
+                    </span>
+                </div>
+            </div>
+        </div>
+        <template v-if="idState.editing">
+            <i18n path="general.components.common.comment.update_or_cancel" tag="div" class="extra">
+                <el-tooltip :content="$t('general.components.common.comment.update_shortcut', {shortcut: updateKeysShortcut})" placement="bottom-start" place="update">
+                    <el-button type="text" :disabled="idState.loading._isVue && idState.loading.visible" @click="update">
+                        {{$t('general.components.common.comment.update')}}
+                    </el-button>
+                </el-tooltip>
+                <el-tag size="mini" place="esc">{{$t('general.components.common.comment.esc')}}</el-tag>
+                <el-button type="text" :disabled="idState.loading._isVue && idState.loading.visible" @click="cancelEdit" place="cancel">
+                    {{$t('general.components.common.comment.cancel')}}
+                </el-button>
+            </i18n>
+        </template>
+        <el-button type="text" @click="showAddComment" v-else-if="!parentId && showChildren">
+            {{$t('general.components.common.comment.add_child_comment')}}
+        </el-button>
+        <div class="children" v-if="showChildren && (idState.visibleAddComment || data.children_count)">
+            <el-button type="text" size="small" :loading="idState.loading.visible" @click="getChildren" v-if="data.children_count !== data.children.data.length">
+                {{$tc('general.components.common.comment.load_more', data.children_count - data.children.data.length)}}
+            </el-button>
+            <comments :id="id" :parent-id="data.id" :type="type" :data="data.children" :use-placeholder="false" v-if="data.children.data.length" />
+            <add-comment ref="addComment" :id="id" :parent-id="data.id" :type="type" :reversed="reversed" />
+        </div>
+    </div>
+</template>
+
+<script>
+    import ErrorFallback from 'components/common/Comment/Error'
+    import AgoMixin from 'mixins/agoMixin'
+    import {IdState} from 'vue-virtual-scroller'
+    import {displaySuccess, displayError} from 'helpers/messages'
+    import { EventBus } from '../../../event-bus.js';
+    import { Avatar } from 'vue-avatar';
+
+    export default {
+        mixins: [
+            AgoMixin,
+            IdState({
+                idProp: vm => vm.data.id
+            })
+        ],
+        components: {
+            Avatar,
+        },
+        props: {
+            id: {
+                type: Number,
+            },
+            parentId: {
+                type: Number
+            },
+            type: {
+                type: String,
+                validator: type => ['pinboard', 'listing', 'request', 'conversation', 'internalNotices'].includes(type)
+            },
+            data: {
+                type: Object,
+                default: () => ({
+                    user: {
+                        name: ''
+                    }
+                }),
+                required: true
+            },
+            reversed: {
+                type: Boolean,
+                default: false
+            },
+            showChildren: {
+                type: Boolean,
+                default: false
+            },
+            newStyle: {
+                type: Boolean,
+                default: false,
+            }
+        },
+        idState () {
+            return {
+                loading: {
+                    visible: false
+                },
+                editing: false,
+                focused: false,
+                observer: null,
+                commentProxy: null,
+                visibleAddComment: false
+            }
+        },
+        data () {
+            return {
+                errorFallback: ErrorFallback,
+                viewId: -1,
+            }
+        },
+        mounted () {
+            if(this.$refs.container !== undefined)
+                this.data.height =  this.$refs.container.clientHeight
+        },
+        methods: {
+            enterEdit () {
+                this.idState.editing = true
+
+                this.$nextTick(() => {
+                    this.$refs.content.focus()
+
+                    this.observer = new MutationObserver(() => this.$emit('size-changed')).observe(this.$refs.content.$el.querySelector('textarea'), {
+                        attributes: true,
+                        attributeFilter: ['style']
+                    })
+                })
+
+                this.$emit('enter-edit')
+            },
+            cancelEdit () {
+                this.idState.editing = false
+                this.comment = this.data.comment
+
+                this.$emit('cancel-edit')
+            },
+            async update () {
+                if (!this.comment) {
+                    return
+                }
+
+                if (this.comment === this.data.comment) {
+                    return this.cancelEdit()
+                }
+
+                let loadingParams = {
+                    target: this.$refs.avatar.$el
+                }
+
+                this.idState.loading = this.$loading(loadingParams)
+
+                this.$refs.content.blur()
+
+                let params = {
+                    id: this.id,
+                    commentable: this.type,
+                    comment: this.comment,
+                    parent_id: this.data.id
+                }
+
+                if (this.$parent.$parent.data) {
+                    params.child_id = this.data.id;
+                    params.parent_id = this.$parent.$parent.data.id
+                }
+
+                try {
+                    await this.$store.dispatch('comments/update', params)
+                } catch (error) {
+                    this.comment = this.data.comment
+
+                    displayError(error)
+                } finally {
+                    this.cancelEdit()
+
+                    this.idState.loading.close()
+                }
+            },
+            async remove () {
+                this.idState.loading = this.$loading({
+                    target: this.$refs.avatar.$el
+                })
+
+                let params = {
+                    id: this.id,
+                    commentable: this.type,
+                    parent_id: this.data.id
+                }
+
+                if (this.$parent.$parent.data) {
+                    params.child_id = this.data.id;
+                    params.parent_id = this.$parent.$parent.data.id
+                }
+
+                try {
+                    await this.$store.dispatch('comments/delete', params)                    
+                } catch (error) {
+                    displayError(error)
+                } finally {
+                    this.idState.loading.close()
+                }
+            },
+            async getChildren() {
+                const {
+                    current_page,
+                    last_page
+                } = this.data.children;
+
+                if (current_page && last_page &&
+                    current_page == last_page) {
+                    return
+                }
+
+                let page = current_page || 0
+
+                page++
+
+                this.idState.loading.visible = true
+
+                try {
+                    await this.$store.dispatch('comments/get', {
+                        id: this.id,
+                        parent_id: this.data.id,
+                        commentable: this.type,
+                        page,
+                        per_page: 5,
+                        sortedBy: 'desc',
+                        orderBy: 'created_at'
+                    })
+                } catch (err) {
+                    displayError(err)
+                } finally {
+                    this.idState.loading.visible = false
+                }
+            },
+            showAddComment() {
+                if (!this.idState.visibleAddComment) {
+                    this.idState.visibleAddComment = true
+                }
+
+                this.$nextTick(() => this.$refs.addComment.focus())
+            },
+            openViewer(idx) {
+                this.viewId = idx;
+            },
+            closeViewer() {
+                this.viewId = -1;
+            },
+        },
+        computed: {
+            comment: {
+                get () {
+                    return (this.idState.commentProxy === null) ? this.data.comment : this.idState.commentProxy
+                },
+                set (content) {
+                    this.idState.commentProxy = content
+                }
+            },
+            hasActions() {
+                if((this.$store.getters.loggedInUser.hasOwnProperty('resident')) && (this.$store.getters.loggedInUser.resident)){
+                    return false;
+                }
+                else{
+                    return (this.data.comment || !this.data.children_count) && !this.idState.loading.visible && this.data.user_id === this.$store.getters.loggedInUser.id
+                }                
+            },
+            updateKeysShortcut () {
+                if (navigator.platform.toUpperCase().includes('MAC')) {
+                    return 'option+enter'
+                }
+
+                return 'alt+enter'
+            },
+            attachments() {
+                let images = [];
+                let files = [];
+                let count = 0;
+                let srcList = [];
+                let preview = '';
+                this.data.media.forEach((file) => {
+                    let file_extension = file.name.split('.').pop().toLowerCase();
+                    if(['jpg', 'jpeg', 'gif', 'bmp', 'png'].includes(file_extension)) {
+                        srcList.push(file.url);
+                        if(images.length < 4)
+                            images.push(file);
+                        count ++;
+                    } else {
+                        let kb = Math.ceil(file.size / 1024);
+                        let mb = Math.ceil(kb / 1024);
+                        if(mb <= 1)
+                            file.capacity = `${kb} KB`;
+                        else
+                            file.capacity = `${mb} MB`;
+                        if(['pdf', 'xls', 'doc', 'xlsx', 'docx'].includes(file_extension))
+                            file.isLink = true;
+                        files.push(file);
+                    }
+                });
+                if(count === 1 || count > 3)
+                    preview = images.shift();
+                return {
+                    count , preview, images, files, srcList
+                }
+            },
+        },
+        beforeDestroy () {
+            if (this.observer) {
+                this.observer.disconnect()
+            }
+        },
+
+    }
+</script>
+
+<style lang="scss" scoped>
+    .comment {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        font-size: 14px;
+        position: relative;
+
+        &.new-style {
+            align-items: flex-start;
+        }
+
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            position: relative;
+            width: calc(100% - 40px);
+            margin-bottom: 15px;
+
+            &.new-style {
+                flex-direction: column;
+            }
+
+            .el-textarea {
+                position: relative;
+                margin: 2px 0;
+
+                &:before,
+                &:after {
+                    content: '';
+                    position: absolute;
+                    width: 0;
+                    height: 0;
+                    border-width: 0;
+                    border-style: solid;
+                    border-color: transparent;
+                    border-width: 0 0 8px 6px;
+                    transition: border-bottom-color 0.2s cubic-bezier(0.645, 0.045, 0.355, 1);
+                }
+
+                &:before {
+                    left: -6px;
+                    bottom: 0;
+                }
+
+                &:after {
+                    left: -4px;
+                    bottom: 1px;
+                }
+
+                &.is-disabled:before {
+                    border-bottom-color: #E4E7ED;
+                }
+
+                &.is-disabled:after {
+                    border-bottom-color: #F5F7FB;
+                }
+
+                &:not(.is-disabled):after {
+                    border-bottom-color: #fff;
+                }
+
+                &:not(.is-disabled).is-focused:before {
+                    border-bottom-color: #6AC06F;
+                }
+
+                &:not(.is-disabled):not(.is-focused):before {
+                    border-bottom-color: #DCDFE6;
+                }
+
+                &:not(.is-disabled):not(.is-focused):hover:before {
+                    border-bottom-color: #C0C4CC;
+                }
+
+                &.is-focused :global(.el-textarea__inner)::-webkit-scrollbar-thumb {
+                    background-color: #6AC06F;
+                    box-shadow: inset -1px -1px 0px darken(#6AC06F, 4%), inset 1px 1px 0px darken(#6AC06F, 4%);
+                }
+
+                &:not(.is-focused) :global(.el-textarea__inner) {
+                    &:hover::-webkit-scrollbar-thumb {
+                        background-color: #C0C4CC;
+                        box-shadow: inset -1px -1px 0px darken(#C0C4CC, 4%), inset 1px 1px 0px darken(#C0C4CC, 4%);
+                    }
+
+                    &:not(:hover)::-webkit-scrollbar-thumb {
+                        background-color: #DCDFE6;
+                        box-shadow: inset -1px -1px 0px darken(#DCDFE6, 4%), inset 1px 1px 0px darken(#DCDFE6, 4%);
+                    }
+                }
+
+                :global(.el-textarea__inner) {
+                    padding: 6px 8px;
+                    border-radius: 12px;
+                    max-height: 256px;
+                    overflow-y: overlay;
+                    overflow-x: hidden;
+                    scrollbar-width: thin;
+                    overscroll-behavior: contain;
+                    border-bottom-left-radius: 0;
+                    -webkit-appearance: none;
+                    -webkit-overflow-scrolling: touch;
+
+                    &::-webkit-scrollbar {
+                        width: 14px;
+                    }
+
+                    &::-webkit-scrollbar-thumb {
+                        border: 4px transparent solid;
+                        background-clip: padding-box;
+                        border-radius: 12px;
+                    }
+
+                    &::-webkit-scrollbar-thumb:window-inactive {
+                        background-color: lighten(#6AC06F, 16%);
+                    }
+                }
+            }
+
+            .content {
+                display: flex;
+                align-items: center;
+                position: relative;
+
+                &.disabled {
+                    &:before {
+                        content: '';
+                        position: absolute;
+                        top: 0;
+                        left: -6px;
+                        width: calc(100% + 6px);
+                        height: 100%;
+                        background-color: transparentize(#fff, .1);
+                        z-index: 1;
+                        pointer-events: none;
+                    }
+                }
+
+                .text {
+                    padding: 8px;
+                    position: relative;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-style: solid;
+                    background-color: darken(#fff, 1%);
+                    white-space: pre-line;
+                    word-break: break-word;
+                    margin: 2px 0;
+
+                    &.new-style {
+                        background-color: #f0f0f0;
+                        width: 405px;
+                        border: none;
+                        margin: 0px 0px 10px;
+                        border-radius: 0 10px 10px;
+                        padding: 8px 50px 8px 15px;
+
+                        .name {
+                            color: var(--primary-color);
+                        }
+                        .msg {
+                            color: #3d3f41;
+                            & >>> a {
+                                text-decoration: none;
+                                color: var(--color-main-background-darker);
+                                white-space: nowrap;
+                                &:hover {
+                                    opacity: 0.7;
+                                }
+                            }
+                        }
+                        .time {
+                            font-family: 'Radikal Thin';
+                            color: #CECFCF;
+                            margin-left: 20px;
+                        }
+                    }
+
+                    &:before,
+                    &:after {
+                        content: '';
+                        position: absolute;
+                        width: 0;
+                        height: 0;
+                        border-width: 0;
+                        border-style: solid;
+                        border-color: transparent;
+                    }
+                }
+            }
+
+            .attachment-images {
+                padding: 15px 15px;
+                margin-bottom: 10px;
+                width: 340px;
+                border-radius: 8px;
+                background-color: var(--background-color-base);
+
+                img {
+                    border-radius: 4px;
+                }
+
+                :global(.ui-image .ui-image__actions .icon-trash-empty) {
+                    display: none;
+                }
+                
+                .preview-image {
+                    & ~ .images {
+                        margin-top: 5px;
+                    }
+
+                    :global(.ui-image img) {
+                        height: 81.5px;
+                    }
+                }
+                .images {
+                    display: flex;
+                    .image {
+                        position: relative;
+
+                        &:not(:last-of-type) {
+                            margin-right: 5px;
+                        }
+
+                        .ui-image {
+                            height: 81.5px;
+                            width: 110px;
+
+                            &:hover {
+                                z-index: 10;
+                            }
+                        }
+
+                        span.count {
+                            position: absolute;
+                            left: 0;
+                            top: 0;
+                            display: flex;
+                            justify-content: center;
+                            align-items: center;
+                            z-index: 9;
+                            width: 100%;
+                            height: 100%;
+                            text-align: center;
+                            color: #fff;
+                            background-color: rgba(0,0,0,0.3);
+
+                            &:hover {
+                                background-color: transparent;
+                                :global(& ~ .ui-image) {
+                                    z-index: 10;
+                                    .ui-image__actions {
+                                        filter: opacity(1);
+                                        cursor: pointer;
+                                    }
+                                } 
+                            }
+                        }
+                    }
+                }
+            }
+            .attachment-files {
+                .file {
+                    padding: 12px 15px 8px;
+                    margin: 0px;
+                    border-radius: 8px;
+                    display: flex;
+                    align-items: center;
+                    width: 330px;
+                    background-color: var(--background-color-base);
+                    
+                    &:not(last-of-type) {
+                        margin-bottom: 5px; 
+                    }
+
+                    .file-image {
+                        margin-right: 10px;
+                        :global(svg) {
+                            font-size: 30px;
+                        }
+                    }
+                    .file-info {
+                        display: flex;
+                        flex-direction: column;
+                        .file-name {
+                            display: block;
+                            white-space: normal;
+                            font-size: 13px;
+                            font-weight: 700;
+                            overflow: hidden;
+                            text-overflow: ellipsis;
+                            white-space: nowrap;
+                            width:250px;
+
+                            a {
+                                text-decoration: none;
+                                color: #525252;
+                            }
+                        }
+                        .file-size {
+                            color: var(--color-info);
+                            font-size: 12px;
+                        }
+                    }
+                }
+            }
+
+            .actions {
+                visibility: hidden;
+                display: flex;
+                align-self: center;
+
+                .el-button {
+                    &:first-of-type {
+                        margin-left: 10px;
+                    }
+
+                    &:last-of-type {
+                        margin-right: 10px;
+                    }
+                }
+            }
+
+            &:hover .actions {
+                visibility: visible;
+            }
+        }
+
+        > * {
+            &.extra {
+                padding: 2px 0;
+                color: darken(#fff, 40%);
+
+                .el-button {
+                    padding: 0;
+                }
+            }
+        }
+
+        .children {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            padding: 8px;
+            border-radius: 6px;
+
+            > .el-button {
+                display: block;
+                margin-top: -4px;
+                color: darken(#fff, 40%);
+            }
+
+            :global(.comments-list) {
+                margin-bottom: 4px;
+            }
+        }
+
+        &.is-reversed {
+            flex-direction: row-reverse;
+
+            .container {
+                flex-direction: row-reverse;
+                margin-right: 8px;
+
+                .el-textarea + small {
+                    left: 0;
+                    padding-left: 8px;
+                }
+
+                .content {
+                    &.empty .text {
+                        color: lighten(#6AC06F, 16%);
+                    }
+
+                    .text.old-style {
+                        border-color: var(--primary-color);
+                        background-color: var(--primary-color-lighter);
+                        border-bottom-right-radius: 0;
+
+
+                        &:before,
+                        &:after {
+                            border-width: 8px 0 0 6px;
+                        }
+
+                        &:before {
+                            right: -6px;
+                            bottom: -1px;
+                            border-left-color: var(--primary-color);
+                        }
+
+                        &:after {
+                            right: -5px;
+                            bottom: -1px;
+                            border-left-color: var(--primary-color-lighter);
+                        }
+
+                        .tag {
+                            position: relative;
+                            
+                            &:before,
+                            &:after {
+                                content: '';
+                                position: absolute;
+                                width: 0;
+                                height: 0;
+                                border-width: 0;
+                                border-style: solid;
+                                border-color: transparent;
+                                border-width: 8px 0 0 6px;
+                            }
+
+                            &:after {
+                                right: -13px;
+                                bottom: -9px;
+                                border-left-color: #fff;
+                            }
+                        }
+
+                        .border {
+                            position: absolute;
+                            height: 100%;
+                            width: 80%;
+                            top: 0;
+                            right: -5px;
+                            border-bottom: 1px solid var(--primary-color);
+                        }
+                    }
+                    .text.new-style {
+                        border-radius: 10px 0 10px 10px;
+                    }
+                }
+            }
+
+            > *:not(.ui-avatar):not(.container) {
+                margin-right: 48px;
+            }
+
+            .children {
+                align-items: flex-end;
+
+                > .el-button:not(.is-loading):after {
+                    content: '—';
+                }
+            }
+        }
+
+        &:not(.is-reversed) {
+            .ui-avatar {
+                &.el-loading-parent--relative {
+                    :global(.el-loading-spinner .circular) {
+                        margin-left: -5px;
+                    }
+                }
+            }
+
+            .container {
+                margin-left: 8px;
+
+                .content {
+                    &.empty .text {
+                        color: darken(#fff, 40%);
+                    }
+
+                    .text.old-style {
+                        border-color: darken(#fff, 5%);
+                        border-bottom-left-radius: 0;
+
+                        &:before,
+                        &:after {
+                            border-width: 0 0 8px 6px;
+                        }
+
+                        &:before {
+                            left: -6px;
+                            bottom: -1px;
+                            border-bottom-color: darken(#fff, 5%);
+                        }
+
+                        &:after {
+                            left: -4px;
+                            bottom: 0;
+                            border-bottom-color: darken(#fff, 1%);
+                        }
+                    }
+                }
+            }
+
+            > *:not(.ui-avatar):not(.container) {
+                margin-left: 48px;
+                padding: 2px 0;
+            }
+
+            .children {
+                align-items: flex-start;
+
+                > .el-button:not(.is-loading):before {
+                    content: '—';
+                }
+            }
+        }
+    }
+</style>
